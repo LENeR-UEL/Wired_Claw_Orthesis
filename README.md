@@ -49,7 +49,7 @@ The PDF documents the assembly supplied by the author. Including the drawing doe
 | 4 | `Push_Claw_` | Closing limit switch; LOW indicates stop |
 | 5 | `H1` | Closing PWM output |
 | 6 | `H2` | Opening PWM output |
-| 7 | `pinoSensor` | Vibration/tilt input |
+| 7 | `pinoSensor` | Vibration/tilt input for motor stop |
 | 10 | `LED_PIN` | Local battery status LED |
 
 Both limit switches use `INPUT_PULLUP`, but their stop conditions have different polarities. The wiring must reproduce these conditions rather than assume that both switches stop the motor at LOW.
@@ -118,7 +118,13 @@ The LED provides battery indications only in `IDLE` and `HOLD`:
 
 The LED stays off in all other states. Blocking acquisition also limits LED updates. Battery level does not inhibit motor movement in the current code.
 
-The tilt input updates `vibracaoDetectada`, but this variable does not participate in motor control in this version.
+## Vibration-triggered motor stop
+
+The tilt input updates `vibracaoDetectada` and actively stops the motor. The input is checked at most once every 5 ms, including during EMG acquisition. Thirteen HIGH observations within a 200 ms window activate the stop; these are sampled levels, not independent rising edges.
+
+While `vibracaoDetectada` is active, both H-bridge PWM outputs are set to zero and state-machine execution is suspended, including during `CALIBRATING`. The current state is retained. After 500 ms without a HIGH observation, the interlock releases and control resumes from that state using the reset PWM ramp. The stop is automatic and does not require a manual reset.
+
+Limit switches are still checked after the EMG block. Detection and restart timing depend on software polling and processing; no hardware interrupt is used.
 
 ## Dependencies and setup
 

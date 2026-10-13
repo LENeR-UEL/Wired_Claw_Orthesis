@@ -65,14 +65,17 @@ State state = CALIBRATING; // The claw always starts by seeking its home positio
 State prevState = IDLE;
 
 
-// Vibration detection counts HIGH observations within the configured window.
-// It does not count signal edges. vibracaoDetectada currently has no effect
-// on motor control; the blocking EMG acquisition limits observation rate.
+// Sample the tilt input at most once every 5 ms, including during EMG collection.
+// Thirteen HIGH observations within 200 ms stop the motor. These are level
+// observations, not rising edges. Require 500 ms without HIGH before resuming.
 const int limiteHits = 13;
 const int janelaTempo = 200;
 int contadorHits = 0;
 unsigned long tempoInicioJanela = 0;
 bool vibracaoDetectada = false;
+unsigned long lastTiltSample = 0;
+const unsigned long tiltSampleInterval = 5;
+const unsigned long vibrationQuietTime = 500;
 
 
 // Motor ramp levels on the 0..255 PWM scale (approximately 10/30/60/90%).
@@ -85,8 +88,41 @@ unsigned long pwmTimer = 0;
 const unsigned long rampDelay = 60;
 
 
-unsigned long motorTimer = 0; // Updated on vibration detection; otherwise unused.
+unsigned long motorTimer = 0; // Most recent HIGH observation during vibration.
 unsigned long lastPlotTime = 0;
+
+
+/**
+ * Update the vibration interlock without a blocking delay.
+ * Stop both outputs immediately when the detection threshold is reached.
+ * Continued HIGH observations extend the stop; LOW for 500 ms releases it.
+ */
+void updateVibration() {
+    unsigned long tiltNow = millis();
+    if (tiltNow - lastTiltSample < tiltSampleInterval) return;
+    lastTiltSample = tiltNow;
+
+    if (contadorHits > 0 && tiltNow - tempoInicioJanela >= janelaTempo) {
+        contadorHits = 0;
+    }
+
+    if (digitalRead(pinoSensor) == HIGH) {
+        if (contadorHits == 0) tempoInicioJanela = tiltNow;
+        if (contadorHits < limiteHits) contadorHits++;
+        if (contadorHits >= limiteHits) vibracaoDetectada = true;
+        if (vibracaoDetectada) motorTimer = tiltNow;
+    }
+
+    if (vibracaoDetectada && tiltNow - motorTimer >= vibrationQuietTime) {
+        vibracaoDetectada = false;
+        contadorHits = 0;
+    }
+
+    if (vibracaoDetectada) {
+        analogWrite(H1, 0);
+        analogWrite(H2, 0);
+    }
+}
 
 
 // ==========================================
@@ -101,6 +137,7 @@ unsigned long lastPlotTime = 0;
 float readMES(int N = 400) {
     float sum = 0;
     for (int i = 0; i < N; i++) {
+        updateVibration();
         float v = analogRead(PIN_EMG);
         // Filter before rectification to preserve the signed input waveform.
         v = lp.filterIn(v);
@@ -158,23 +195,7 @@ void loop() {
     float voltage = ((rawSum / 50.0) / 4095.0) * 3.3 * 2.0;
     batteryPercent = constrain((voltage - 3.6) / 0.6 * 100.0, 0, 100);
 
-    // --- TILT SENSOR ---
-    int leituraTilt = digitalRead(pinoSensor);
-    if (leituraTilt == HIGH) {
-        if (contadorHits == 0) tempoInicioJanela = now;
-        contadorHits++;
-        delay(5);
-    }
-    if (now - tempoInicioJanela > janelaTempo) {
-        if (contadorHits >= limiteHits) {
-            vibracaoDetectada = true;
-            motorTimer = now;
-        } else if (now - tempoInicioJanela > (janelaTempo + 500)) {
-            vibracaoDetectada = false;
-        }
-        contadorHits = 0;
-    }
-
+    updateVibration();
 
     // Acquire a complete sample block, then derive the five voting inputs.
     MES = readMES(400);
@@ -213,76 +234,84 @@ void loop() {
     // Limit conditions take priority over EMG requests in the moving states.
     // A direction-change request updates the state; its motor outputs are
     // applied on the next iteration. Endpoint branches explicitly zero PWM.
-    switch (state) {
-        case CALIBRATING:
-            // Seek the closed endpoint independently of the EMG classification.
-            if (stopClose == LOW) {
+    // Vibration overrides every motor state, including homing. Keep the current
+    // state while stopped and reset the ramp for a gradual restart on release.
+    if (vibracaoDetectada) {
+        analogWrite(H1, 0);
+        analogWrite(H2, 0);
+        rampStep = 0;
+        pwmTimer = millis();
+    } else {
+        switch (state) {
+            case CALIBRATING:
+                // Seek the closed endpoint independently of the EMG classification.
+                if (stopClose == LOW) {
+                    analogWrite(H1, 0); analogWrite(H2, 0);
+                    homingDone = true;
+                    state = IDLE;
+                } else {
+                    if (rampStep < maxRampSteps - 1 && (now - pwmTimer >= rampDelay)) {
+                        rampStep++;
+                        pwmTimer = now;
+                    }
+                    analogWrite(H1, pwmLevels[rampStep]); analogWrite(H2, 0);
+                }
+                break;
+
+
+            case IDLE:
                 analogWrite(H1, 0); analogWrite(H2, 0);
-                homingDone = true;
-                state = IDLE;
-            } else {
+                // Open if a contraction is detected and opening travel remains
+                if (stopOpen == LOW && contraido) state = OPEN;
+                // Close if relaxation is detected and closing travel remains
+                else if (stopClose == HIGH && relaxado) state = CLOSE;
+                break;
+
+
+            case CLOSE:
+                // Stop at the closed endpoint before evaluating a reversal request.
+                if (stopClose == LOW) { // Stop the motor when the closing limit switch is reached
+                    analogWrite(H1, 0); analogWrite(H2, 0);
+                    delay(50);
+                    state = HOLD;
+                    break;
+                }
+                if (contraido) { state = OPEN; break; } // Contraction during closing requests a direction reversal
+               
                 if (rampStep < maxRampSteps - 1 && (now - pwmTimer >= rampDelay)) {
                     rampStep++;
                     pwmTimer = now;
                 }
                 analogWrite(H1, pwmLevels[rampStep]); analogWrite(H2, 0);
-            }
-            break;
-
-
-        case IDLE:
-            analogWrite(H1, 0); analogWrite(H2, 0);
-            // Open if a contraction is detected and opening travel remains
-            if (stopOpen == LOW && contraido) state = OPEN;
-            // Close if relaxation is detected and closing travel remains
-            else if (stopClose == HIGH && relaxado) state = CLOSE;
-            break;
-
-
-        case CLOSE:
-            // Stop at the closed endpoint before evaluating a reversal request.
-            if (stopClose == LOW) { // Stop the motor when the closing limit switch is reached
-                analogWrite(H1, 0); analogWrite(H2, 0);
-                delay(50);
-                state = HOLD;
                 break;
-            }
-            if (contraido) { state = OPEN; break; } // Contraction during closing requests a direction reversal
-           
-            if (rampStep < maxRampSteps - 1 && (now - pwmTimer >= rampDelay)) {
-                rampStep++;
-                pwmTimer = now;
-            }
-            analogWrite(H1, pwmLevels[rampStep]); analogWrite(H2, 0);
-            break;
 
 
-        case HOLD:
-            // Motor off; holding depends on mechanics, not active force control.
-            analogWrite(H1, 0); analogWrite(H2, 0);
-            if (contraido) state = OPEN;
-            else if (stopClose == HIGH && relaxado) state = CLOSE;
-            break;
-
-
-        case OPEN:
-            // Zero both outputs as soon as this branch detects the open endpoint.
-            if (stopOpen == HIGH) {
+            case HOLD:
+                // Motor off; holding depends on mechanics, not active force control.
                 analogWrite(H1, 0); analogWrite(H2, 0);
-                state = IDLE;
+                if (contraido) state = OPEN;
+                else if (stopClose == HIGH && relaxado) state = CLOSE;
                 break;
-            }
-            if (relaxado) { state = CLOSE; break; }  // Relaxation during opening requests closing
 
 
-            if (rampStep < maxRampSteps - 1 && (now - pwmTimer >= rampDelay)) {
-                rampStep++;
-                pwmTimer = now;
-            }
-            analogWrite(H1, 0); analogWrite(H2, pwmLevels[rampStep]);
-            break;
+            case OPEN:
+                // Zero both outputs as soon as this branch detects the open endpoint.
+                if (stopOpen == HIGH) {
+                    analogWrite(H1, 0); analogWrite(H2, 0);
+                    state = IDLE;
+                    break;
+                }
+                if (relaxado) { state = CLOSE; break; }  // Relaxation during opening requests closing
+
+
+                if (rampStep < maxRampSteps - 1 && (now - pwmTimer >= rampDelay)) {
+                    rampStep++;
+                    pwmTimer = now;
+                }
+                analogWrite(H1, 0); analogWrite(H2, pwmLevels[rampStep]);
+                break;
+        }
     }
-
 
     // Indicate battery status only while the motor is idle or held off.
     // At or above 20%, request a 200 ms on/off cycle; below 20%, stay on.
