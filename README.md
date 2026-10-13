@@ -113,8 +113,8 @@ The LED provides battery indications only in `IDLE` and `HOLD`:
 | Battery percentage | LED behavior |
 |---|---|
 | Above 30% | Configured alternation: 200 ms on / 200 ms off |
-| Above 20% and up to 30% | Off |
-| Up to 20% | On |
+| From 20% to 30% (inclusive) | Configured alternation: 200 ms on / 200 ms off |
+| Below 20% | On |
 
 The LED stays off in all other states. Blocking acquisition also limits LED updates. Battery level does not inhibit motor movement in the current code.
 

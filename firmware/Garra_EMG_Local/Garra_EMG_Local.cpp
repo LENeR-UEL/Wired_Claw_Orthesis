@@ -250,11 +250,11 @@ void loop() {
     }
 
 
-    // Original receiver LED behavior: local battery only, no BLE indication.
+    // Local battery status LED.
     if (state == IDLE || state == HOLD) {
-        if (batteryPercent > 30.0) {
+        if (batteryPercent >= 20.0) {
             digitalWrite(LED_PIN, (now % 400 < 200) ? HIGH : LOW);
-        } else if (batteryPercent <= 20.0) {
+        } else if (batteryPercent < 20.0) {
             digitalWrite(LED_PIN, HIGH);
         } else {
             digitalWrite(LED_PIN, LOW);
