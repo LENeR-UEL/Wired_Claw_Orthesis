@@ -60,7 +60,7 @@ The ADC is configured for 12-bit resolution. Each muscle activity calculation us
 
 1. Read the AD8232 output on GPIO2.
 2. Apply a low-pass filter configured at 40 Hz, `OD3`.
-3. Apply a high-pass filter configured at 10 Hz, with `OD3` requested.
+3. Apply a second-order high-pass filter configured at 10 Hz, `OD2`.
 4. Rectify the filtered signal using its absolute value.
 5. Average the 400 samples with a software gain of 1.0.
 
@@ -77,11 +77,11 @@ The threshold ranges from approximately 5 to 14.99. Contraction requires all fiv
 
 ### Timing in this version
 
-The firmware retains `Ts = 0.01`. Each sample includes a 500 µs delay in addition to ADC and processing time, so the actual sampling period differs from the period configured in the filters. The 10 Hz and 40 Hz values are configured parameters, not measured physical cutoff frequencies.
+The EMG filtering is configured with a 10 Hz high-pass cutoff (`OD2`, second order) and a 40 Hz low-pass cutoff (`OD3`, third order). Samples are processed through the low-pass filter first and then the high-pass filter. Both filters use `Ts = 0.01` seconds.
 
-The `readMES(400)` function is blocking and takes more than 200 ms. Limit switches and states are evaluated after acquisition. The PWM ramp has a configured interval of 60 ms, but its updates depend on loop execution time.
+Each sample includes a 500 µs delay in addition to ADC reading and filter processing time. The `readMES(400)` function acquires 400 samples, applies both filters, takes the absolute value of each filtered sample, and returns their arithmetic mean with a software gain of 1.0. This mean is stored in `MES`; `MES1` through `MES4` are scaled versions of it used in the unanimous voting rule.
 
-The libFilter high-pass implementation supports up to second order; requesting `OD3` uses its second-order implementation. See the [library source](https://github.com/MartinBloedorn/libFilter/blob/master/filters.cpp) for details.
+Acquiring a complete block takes more than 200 ms and blocks the main loop. Limit switches and state transitions are evaluated after acquisition, while the tilt input continues to be monitored during collection. The PWM ramp has a configured interval of 60 ms, and its updates depend on loop execution time.
 
 ## State machine
 

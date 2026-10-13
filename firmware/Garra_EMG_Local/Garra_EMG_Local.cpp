@@ -42,11 +42,11 @@ const int LED_PIN     = 10; // Single LED
 // Frequencies are configured in Hz and Ts in seconds. The actual acquisition
 // interval includes ADC/filter execution and a 500 us delay; it does not match
 // Ts. These settings therefore do not establish measured physical cutoffs.
-// libFilter implements the requested OD3 high-pass as a second-order filter.
+// Use a second-order high-pass and a third-order low-pass filter.
 const float fHP = 10.0;
 const float fLP = 40.0;
 const float Ts  = 0.01;
-Filter hp(fHP, Ts, IIR::ORDER::OD3, IIR::TYPE::HIGHPASS);
+Filter hp(fHP, Ts, IIR::ORDER::OD2, IIR::TYPE::HIGHPASS);
 Filter lp(fLP, Ts, IIR::ORDER::OD3);
 
 
